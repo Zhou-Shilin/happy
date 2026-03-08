@@ -273,7 +273,7 @@ export class CodexMcpClient {
         const conversationId = this.conversationId ?? this.sessionId;
         if (!this.conversationId) {
             // Older Codex deployments may still expect conversationId instead of threadId.
-            this.conversationId = conversationId;
+            this.conversationId = threadId;
             logger.debug('[CodexMCP] conversationId missing, defaulting to threadId:', this.conversationId);
         }
 
@@ -331,6 +331,9 @@ export class CodexMcpClient {
             return;
         }
 
+        // New Codex releases use threadId/thread_id, while older Happy/Codex integration
+        // paths stored the active thread under sessionId/session_id. Accept both so
+        // existing sessions can continue across protocol variants.
         const threadId = candidate.threadId ?? candidate.thread_id ?? candidate.sessionId ?? candidate.session_id;
         if (typeof threadId === 'string' && threadId.length > 0) {
             this.sessionId = threadId;
