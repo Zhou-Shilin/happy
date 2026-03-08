@@ -9,6 +9,8 @@ const {
     mockSandboxCleanup,
     mockClientConnect,
     mockClientClose,
+    mockClientCallTool,
+    captureNotificationHandler,
     mockStdioCtor,
 } = vi.hoisted(() => ({
     mockExecSync: vi.fn(),
@@ -17,6 +19,8 @@ const {
     mockSandboxCleanup: vi.fn(),
     mockClientConnect: vi.fn(),
     mockClientClose: vi.fn(),
+    mockClientCallTool: vi.fn(),
+    captureNotificationHandler: vi.fn(),
     mockStdioCtor: vi.fn(),
 }));
 
@@ -39,11 +43,13 @@ vi.mock('@/ui/logger', () => ({
 
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: class MockClient {
-        setNotificationHandler = vi.fn();
+        setNotificationHandler = vi.fn((_schema: unknown, handler: (data: any) => void) => {
+            captureNotificationHandler(handler);
+        });
         setRequestHandler = vi.fn();
         connect = mockClientConnect;
         close = mockClientClose;
-        callTool = vi.fn();
+        callTool = mockClientCallTool;
         constructor() {}
     },
 }));
@@ -81,6 +87,7 @@ describe('CodexMcpClient sandbox integration', () => {
         mockExecSync.mockReturnValue('codex-cli 0.43.0');
         mockClientConnect.mockResolvedValue(undefined);
         mockClientClose.mockResolvedValue(undefined);
+        mockClientCallTool.mockReset();
         mockInitializeSandbox.mockResolvedValue(mockSandboxCleanup);
         mockWrapForMcpTransport.mockResolvedValue({ command: 'sh', args: ['-c', 'wrapped codex mcp'] });
     });
@@ -149,6 +156,75 @@ describe('CodexMcpClient sandbox integration', () => {
                 env: expect.objectContaining({
                     RUST_LOG: 'info,codex_core=warn,codex_core::rollout::list=off',
                 }),
+            }),
+        );
+    });
+
+    it('extracts threadId from structuredContent and uses it for codex-reply', async () => {
+        mockClientCallTool
+            .mockResolvedValueOnce({
+                structuredContent: {
+                    threadId: 'thread-123',
+                    content: 'hello',
+                },
+            })
+            .mockResolvedValueOnce({ content: [] });
+
+        const client = new CodexMcpClient();
+
+        await client.startSession({ prompt: 'hello' });
+        await client.continueSession('next');
+
+        expect(mockClientCallTool).toHaveBeenNthCalledWith(
+            2,
+            {
+                name: 'codex-reply',
+                arguments: {
+                    threadId: 'thread-123',
+                    conversationId: 'thread-123',
+                    prompt: 'next',
+                },
+            },
+            undefined,
+            expect.objectContaining({
+                timeout: expect.any(Number),
+            }),
+        );
+    });
+
+    it('updates the active thread id from codex events that use snake_case fields', async () => {
+        mockClientCallTool.mockResolvedValue({ content: [] });
+        const client = new CodexMcpClient();
+
+        await client.connect();
+
+        const notificationHandler = captureNotificationHandler.mock.calls[0]?.[0];
+        expect(notificationHandler).toBeTypeOf('function');
+
+        notificationHandler({
+            params: {
+                msg: {
+                    data: {
+                        thread_id: 'thread-from-event',
+                    },
+                },
+            },
+        });
+
+        await client.continueSession('next');
+
+        expect(mockClientCallTool).toHaveBeenLastCalledWith(
+            {
+                name: 'codex-reply',
+                arguments: {
+                    threadId: 'thread-from-event',
+                    conversationId: 'thread-from-event',
+                    prompt: 'next',
+                },
+            },
+            undefined,
+            expect.objectContaining({
+                timeout: expect.any(Number),
             }),
         );
     });
